@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -200,8 +201,15 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+
+  double ref_vel = 0.0;//49.5;
+  int lane = 1;
+
+  h.onMessage([&ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
+
+
+
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -211,11 +219,15 @@ int main() {
 
       auto s = hasData(data);
 
+
+
       if (s != "") {
         auto j = json::parse(s);
         
         string event = j[0].get<string>();
         
+
+
         if (event == "telemetry") {
           // j[1] is the data JSON object
           
@@ -239,11 +251,209 @@ int main() {
 
           	json msgJson;
 
+          	//vector<double> next_x_vals;
+          	//vector<double> next_y_vals;
+
+
+          	// define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+
+
+
+
+          	int prev_size = previous_path_x.size(); //checking how many waypoints are in the path
+
+
+          	if (prev_size > 0)
+          	{
+          		car_s = end_path_s;
+          	}
+          	bool too_close = false; //variable too_close is used to make decisions about lane change and slowing down
+
+          	for (int i = 0; i < sensor_fusion.size(); i++) //Checking for all the data provided by the sensors in the simulator
+          	{
+          		float d = sensor_fusion[i][6]; //The d position in frenet coordinate of other vehicles
+          		if ((d < (2+4*lane+2)) && (d > (2+4*lane-2))) // checking if the vehicle is in the same lane as we are
+          		{
+          			double vx = sensor_fusion[i][3];
+          			double vy = sensor_fusion[i][4];
+          			double check_speed = sqrt(vx*vx+vy*vy);
+          			double check_car_s = sensor_fusion[i][5]; //obtained the speed and s position of the car which is in our lane
+
+          			check_car_s += ((double)prev_size*0.02*check_speed);
+          			if ((check_car_s > car_s) && ((check_car_s - car_s) < 30)) // if the car gets closer than 30 meters to our car set too_close
+          			{
+
+          				too_close = true;
+
+          			}
+          		}
+          	}
+
+          	if (too_close)
+          	{
+          		//bool right_approaching = false; //checks if on the right side a car is approaching the overtake path
+          		bool right_front_slow = false; //checks if a car is in front of the overtake path on the right
+          		//bool left_approaching = false; //checks if on the left side a car is approaching the overtake path
+          		bool left_front_slow = false; //checks if a car is in front of the overtake path on the left
+
+          		// check if we can change lanes to left or if we can change lanes to right
+          		for (int i = 0; i < sensor_fusion.size(); i++)
+          		{
+          			float d = sensor_fusion[i][6];
+          			//check the lane of the car
+          			if ((d < (2+4*(lane + 1)+2)) && (d > (2+4*(lane + 1) -2))) // checking if the vehicle is in the right lane as we are
+          			{
+          				double vx = sensor_fusion[i][3];
+          				double vy = sensor_fusion[i][4];
+          				double check_speed = sqrt(vx*vx+vy*vy);
+          				double check_car_s = sensor_fusion[i][5]; //obtained the speed and s position of the car which is in right lane
+
+          				check_car_s += ((double)prev_size*0.02*check_speed);
+          				if ((check_car_s > car_s) && ((check_car_s - car_s) < 20)) // if the car gets closer than 20 meters to our car don't go right
+          				{
+
+          					right_front_slow = true;
+
+          				}
+          			}
+          			if ((d < (2+4*(lane - 1)+2)) && (d > (2+4*(lane - 1) -2))) // checking if the vehicle is in the left lane as we are
+          			{
+          				double vx = sensor_fusion[i][3];
+          				double vy = sensor_fusion[i][4];
+          				double check_speed = sqrt(vx*vx+vy*vy);
+          				double check_car_s = sensor_fusion[i][5]; //obtained the speed and s position of the car which is in right lane
+
+          				check_car_s += ((double)prev_size*0.02*check_speed);
+          				if ((check_car_s > car_s) && ((check_car_s - car_s) < 20)) // if the car gets closer than 20 meters to our car don't go left
+          				{
+
+          					left_front_slow = true;
+
+          				}
+
+          			}
+
+          		}
+
+          		if (lane > 0 && !left_front_slow)
+          			lane--;
+          		else if (lane < 2 and !right_front_slow)
+          			lane++;
+          		else
+          			//no change lane possible so slow down in the same lane
+          			ref_vel -=0.224;
+          	}
+          	else if (ref_vel < 49.5)
+          	{
+          		ref_vel += 0.224;
+          	}
+
+
+          	vector<double> ptsx;
+          	vector<double> ptsy;
+
+
+          	double ref_x = car_x;
+          	double ref_y = car_y;
+          	double ref_yaw = deg2rad (car_yaw);
+
+
+          	if (prev_size < 2) //If there was only one way point in the waypoints add an additional one based on direction of the car
+          	{
+          		double prev_car_x = car_x - cos(car_yaw);
+          		double prev_car_y = car_y - sin(car_yaw);
+
+          		ptsx.push_back(prev_car_x);
+          		ptsx.push_back(car_x);
+
+          		ptsy.push_back(prev_car_y);
+          		ptsy.push_back(car_y);
+
+          	}
+
+          	else // Get the last two points and make a reference
+          	{
+          		ref_x = previous_path_x[prev_size - 1];
+          		ref_y = previous_path_y[prev_size - 1];
+
+          		double ref_x_prev = previous_path_x[prev_size - 2];
+          		double ref_y_prev = previous_path_y[prev_size - 2];
+          		ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+          		ptsx.push_back(ref_x_prev);
+          		ptsx.push_back(ref_x);
+
+          		ptsy.push_back(ref_y_prev);
+          		ptsy.push_back(ref_y);
+
+          	}
+
+          	//create 3 points in distances 30, 60, and 90 meters and push the to the points
+
+          	vector<double> next_wp0 = getXY(car_s + 30, (2+4*lane),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          	vector<double> next_wp1 = getXY(car_s + 60, (2+4*lane),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          	vector<double> next_wp2 = getXY(car_s + 90, (2+4*lane),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+          	ptsx.push_back(next_wp0[0]);
+          	ptsx.push_back(next_wp1[0]);
+          	ptsx.push_back(next_wp2[0]);
+
+          	ptsy.push_back(next_wp0[1]);
+          	ptsy.push_back(next_wp1[1]);
+          	ptsy.push_back(next_wp2[1]);
+
+          	for (int i = 0; i < ptsx.size(); i++) //change the reference points in the waypoints such that the car is at (0,0)
+          	{
+          		double shift_x = ptsx[i] - ref_x;
+          		double shift_y = ptsy[i] - ref_y;
+
+          		ptsx[i] = (shift_x * cos(0-ref_yaw)-shift_y*sin(0-ref_yaw));
+          		ptsy[i] = (shift_x * sin(0-ref_yaw)+shift_y*cos(0-ref_yaw));
+          	}
+
+          	tk::spline s; //create a spline for the waypoints
+
+          	s.set_points(ptsx,ptsy);
+
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
+          	for (int i = 0; i < previous_path_x.size(); i++) //keep whatever was left from the previous points
+          	{
+          		next_x_vals.push_back(previous_path_x[i]);
+          		next_y_vals.push_back(previous_path_y[i]);
+          	}
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+          	double target_x = 30;
+          	double target_y = s(target_x);
+          	double target_dist = sqrt((target_x * target_x) + (target_y * target_y));
+
+          	double x_add_on = 0;
+
+          	for (int i = 1; i <= 50 - previous_path_x.size(); i++) //always keep 50 reference points and fill all the rest with the following
+          	{
+          		double N = target_dist / (0.02*ref_vel/2.24);
+          		double x_point = x_add_on + (target_x)/N;
+          		double y_point = s(x_point);
+
+          		x_add_on = x_point;
+
+          		double x_ref = x_point;
+          		double y_ref = y_point;
+
+          		x_point = (x_ref * cos(ref_yaw)-y_ref*sin(ref_yaw));
+          		y_point = (x_ref * sin(ref_yaw)+y_ref*cos(ref_yaw));
+
+          		x_point += ref_x;
+          		y_point += ref_y;
+
+          		next_x_vals.push_back(x_point);
+          		next_y_vals.push_back(y_point);
+          	}
+
+
+          	//End by arm041
+
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
